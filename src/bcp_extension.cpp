@@ -1,6 +1,7 @@
 #include "duckdb.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/function/copy_function.hpp" // CopyFunction API
+#include "duckdb/parser/tableref/table_function_ref.hpp" // TableFunctionRef definition
 #include "duckdb/common/string_util.hpp"     // StringUtil helpers
 #include "duckdb/catalog/catalog.hpp"        // Catalog::GetSystemCatalog
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
@@ -16,6 +17,48 @@
 #include <sstream>
 
 using namespace duckdb;
+
+// Forward declaration for BCPTableBind
+static duckdb::unique_ptr<duckdb::FunctionData> BCPTableBind(
+	duckdb::ClientContext &context, duckdb::TableFunctionBindInput &input,
+	duckdb::vector<duckdb::LogicalType> &return_types, duckdb::vector<duckdb::string> &names);
+
+// --- COPY FROM bind for core API (not just TableFunction) ---
+static duckdb::unique_ptr<duckdb::FunctionData> BCPReadBind(
+	duckdb::ClientContext &context, duckdb::CopyFromFunctionBindInput &info,
+	duckdb::vector<duckdb::string> &expected_names, duckdb::vector<duckdb::LogicalType> &expected_types) {
+	// Prepare arguments for TableFunctionBindInput constructor
+	auto inputs = duckdb::vector<duckdb::Value>{duckdb::Value(info.info.file_path)};
+	auto &options = info.info.options;
+	duckdb::named_parameter_map_t named_parameters;
+	for (auto &kv : options) {
+		named_parameters[kv.first] = kv.second.back();
+	}
+	duckdb::vector<duckdb::LogicalType> dummy_types;
+	duckdb::vector<duckdb::string> dummy_names;
+	// TableFunction and TableFunctionRef are not needed for our bind logic, so we can use dummy values
+	duckdb::TableFunction dummy_function;
+	duckdb::optional_ptr<duckdb::TableFunctionInfo> info_ptr = nullptr;
+	duckdb::optional_ptr<duckdb::Binder> binder_ptr = nullptr;
+	static duckdb::TableFunctionRef dummy_ref;
+	duckdb::TableFunctionBindInput tf_input(
+		inputs,
+		named_parameters,
+		dummy_types,
+		dummy_names,
+		info_ptr,
+		binder_ptr,
+		dummy_function,
+		dummy_ref // TableFunctionRef (must be a reference, not nullptr)
+	);
+	duckdb::vector<duckdb::LogicalType> return_types;
+	duckdb::vector<duckdb::string> names;
+	auto bind_data = BCPTableBind(context, tf_input, return_types, names);
+	// Set expected names/types for DuckDB
+	expected_names = names;
+	expected_types = return_types;
+	return bind_data;
+}
 
 // ---------- Options helpers (DuckDB v1.4+: options = map<string, vector<Value>>) ----------
 using options_map_t = duckdb::case_insensitive_map_t<duckdb::vector<duckdb::Value>>;
@@ -33,18 +76,67 @@ struct BCPTableFunctionData : public TableFunctionData {
 	std::string path;
 	std::vector<BCPTargetCol> cols;
 	idx_t row_idx = 0;
-	// Add any state needed for reading
+};
+
+struct BCPTableGlobalState : public GlobalTableFunctionState {
+	std::unique_ptr<std::ifstream> file;
+	std::vector<char> row_buffer;
+	bool eof = false;
+	idx_t row_idx = 0;
 };
 
 static void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &output) {
-	// TODO: Implement reading BCP file row by row, decode fields, and fill output chunk
-	// Use input.bind_data to get file path and column info
-	// Use output.SetCardinality() and output.SetValue(col, row, value)
-	output.SetCardinality(0); // no rows (skeleton)
+	const auto &data = input.bind_data->Cast<BCPTableFunctionData>();
+	auto &state = input.global_state->Cast<BCPTableGlobalState>();
+	const idx_t max_rows = STANDARD_VECTOR_SIZE;
+	if (!state.file) {
+		state.file = duckdb::make_uniq<std::ifstream>(data.path, std::ios::binary);
+		if (!state.file->is_open()) {
+			throw IOException("Could not open BCP file: " + data.path);
+		}
+		// Optionally: skip header if needed
+	}
+	if (state.eof) {
+		output.SetCardinality(0);
+		return;
+	}
+
+	idx_t rows_read = 0;
+	while (rows_read < max_rows && state.file && !state.file->eof()) {
+		// --- Minimal BCP row parsing ---
+		// For now, assume fixed-length rows (sum of col.length)
+		size_t row_len = 0;
+		for (auto &col : data.cols) row_len += col.length;
+		if (row_len == 0) break;
+		state.row_buffer.resize(row_len);
+		state.file->read(state.row_buffer.data(), row_len);
+		std::streamsize n = state.file->gcount();
+		if (n != (std::streamsize)row_len) {
+			state.eof = true;
+			break;
+		}
+
+		// Parse each column from row_buffer
+		size_t offset = 0;
+		for (idx_t col_idx = 0; col_idx < data.cols.size(); col_idx++) {
+			auto &col = data.cols[col_idx];
+			// For now, treat all as string (char/varchar)
+			std::string val(state.row_buffer.data() + offset, col.length);
+			// Trim trailing spaces/nulls for char types
+			val.erase(val.find_last_not_of(" \0") + 1);
+			output.SetValue(col_idx, rows_read, Value(val));
+			offset += col.length;
+		}
+		rows_read++;
+	}
+	output.SetCardinality(rows_read);
+	if (rows_read == 0) {
+		state.eof = true;
+	}
 }
 
 static unique_ptr<FunctionData> BCPTableBind(ClientContext &context, TableFunctionBindInput &input,
-								 vector<LogicalType> &return_types, vector<string> &names) {
+								 duckdb::vector<duckdb::LogicalType> &return_types, duckdb::vector<duckdb::string> &names) {
 	// Expect FORMAT_FILE option
 	std::string fmt_path;
 	auto it = input.named_parameters.find("FORMAT_FILE");
@@ -71,9 +163,8 @@ static unique_ptr<FunctionData> BCPTableBind(ClientContext &context, TableFuncti
 }
 
 static unique_ptr<GlobalTableFunctionState> BCPTableInit(ClientContext &context, TableFunctionInitInput &input) {
-	auto &bind_data = input.bind_data->Cast<BCPTableFunctionData>();
-	// Open file, prepare state, etc. (not implemented)
-	return make_uniq<GlobalTableFunctionState>();
+	// Prepare global state for reading
+	return duckdb::make_uniq<BCPTableGlobalState>();
 }
 
 
@@ -213,6 +304,7 @@ static void BCPWriteFinish(ClientContext & /*context*/, FunctionData & /*bind_p*
 extern "C" {
 
 
+
 DUCKDB_EXTENSION_API void bcp_init(duckdb::DatabaseInstance &db) {
 	CopyFunction fun("bcp");
 	fun.extension = "bcp";
@@ -224,7 +316,8 @@ DUCKDB_EXTENSION_API void bcp_init(duckdb::DatabaseInstance &db) {
 	fun.copy_to_finalize = BCPWriteFinish;
 	fun.copy_to_initialize_local = BCPWriteLocalSink;
 
-	// Bind & pipeline hooks for COPY ... FROM (TableFunction approach)
+	// Bind & pipeline hooks for COPY ... FROM (core API and TableFunction)
+	fun.copy_from_bind = BCPReadBind;
 	fun.copy_from_function = TableFunction(
 		{LogicalType::VARCHAR}, // arguments: file path
 		BCPTableRead,           // main function
