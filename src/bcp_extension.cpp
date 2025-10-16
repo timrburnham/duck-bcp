@@ -8,7 +8,7 @@
 #include "duckdb/execution/execution_context.hpp" // ExecutionContext for sink signature
 #include "duckdb/function/copy_function.hpp"      // CopyFunctionInput
 #include "bcp_format_utils.hpp"                   // shared BCP format helpers
-#include "bcp_writer.hpp"                         // <-- defines BCPTargetCol & BCPWriter
+#include "bcp_writer.hpp"                         // BCPWriter
 #include "bcp_reader.hpp"                         // BCP reader logic
 
 #include <string>
@@ -18,8 +18,6 @@
 #include <sstream>
 
 using namespace duckdb;
-
-// BCP reader logic moved to bcp_reader.cpp/.hpp
 
 // ---------- Options helpers (DuckDB v1.4+: options = map<string, vector<Value>>) ----------
 using options_map_t = duckdb::case_insensitive_map_t<duckdb::vector<duckdb::Value>>;
@@ -33,7 +31,7 @@ static unique_ptr<LocalFunctionData> BCPWriteLocalSink(ExecutionContext &, Funct
 // ---------- FunctionData for binding ----------
 struct BCPBindData : public FunctionData {
 	std::string path;               // output .bcp file path
-	std::vector<BCPTargetCol> cols; // must match BCPWriter::WriteChunk signature
+	std::vector<BCPCol> cols; // must match BCPWriter::WriteChunk signature
 	bool unicode_native = false;    // write NVARCHAR (for bcp -N) for char types
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -79,7 +77,7 @@ static bool GetBoolOption(const options_map_t &opts, const std::string &k, bool 
 	return def;
 }
 
-// ---------- Bind: generate BCPTargetCol from DuckDB output ----------
+// ---------- Bind: generate BCPCol from DuckDB output ----------
 static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFunctionBindInput &input,
                                              const duckdb::vector<std::string> &names,
                                              const duckdb::vector<LogicalType> &sql_types) {
@@ -89,7 +87,7 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 
 	// Check for .fmt file option
 	auto fmt_path = GetOption(ci.options, "FORMAT_FILE", "");
-	std::vector<BCPTargetCol> fmt_cols;
+	std::vector<BCPCol> fmt_cols;
 	if (!fmt_path.empty()) {
 		fmt_cols = ParseBCPFmtFile(fmt_path);
 	}
@@ -97,7 +95,7 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 	if (!fmt_cols.empty() && fmt_cols.size() == names.size()) {
 		// Use .fmt file metadata (already BCP types)
 		for (idx_t i = 0; i < names.size(); i++) {
-			BCPTargetCol col;
+			BCPCol col;
 			col.name = names[i];
 			col.sql_type = fmt_cols[i].sql_type;
 			col.length = fmt_cols[i].length;
@@ -107,7 +105,7 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 	} else {
 		// Fallback: map from DuckDB types to BCP types
 		for (idx_t i = 0; i < names.size(); i++) {
-			BCPTargetCol col;
+			BCPCol col;
 			col.name = names[i];
 			col.sql_type = MapDuckDBTypeToBCPType(sql_types[i]);
 			col.nullable = true; // Could inspect nullability from DuckDB if needed
@@ -122,7 +120,7 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 // ---------- Global writer state ----------
 struct BCPGlobalState : public GlobalFunctionData {
 	unique_ptr<BCPWriter> writer;
-	std::vector<BCPTargetCol> cols; // std::vector to match BCPWriter::WriteChunk
+	std::vector<BCPCol> cols; // std::vector to match BCPWriter::WriteChunk
 	bool initialized = false;
 };
 

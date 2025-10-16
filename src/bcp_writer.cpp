@@ -1,4 +1,5 @@
 #include "bcp_writer.hpp"
+#include "bcp_format_utils.hpp"
 #include "duckdb/common/serializer/buffered_file_writer.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/types/date.hpp"
@@ -40,7 +41,7 @@ static inline int ParseDT2Prec(const string &sql_type, int def = 6) {
 	return ParsePrecision(sql_type, def);
 }
 
-BCPWriter::BCPWriter(const string &data_path, const std::vector<BCPTargetCol> &cols, bool unicode_native)
+BCPWriter::BCPWriter(const string &data_path, const std::vector<BCPCol> &cols, bool unicode_native)
     : cols_(cols), unicode_native_(unicode_native) {
 	out_.open(data_path, std::ios::binary);
 	if (!out_)
@@ -185,12 +186,12 @@ void BCPWriter::WriteSmallDateTime(const timestamp_t &ts) {
 	WriteIntLE64(minutes & 0xFFFF, 2);
 }
 
-static inline bool IsNullable(const BCPTargetCol &c) {
+static inline bool IsNullable(const BCPCol &c) {
 	return c.nullable;
 }
 
 // dispatch per SQL Server type string
-void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPTargetCol> &cols) {
+void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPCol> &cols) {
 	chunk.Flatten();
 	auto n = chunk.size();
 	for (idx_t r = 0; r < n; r++) {

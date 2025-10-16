@@ -5,8 +5,8 @@
 
 using namespace duckdb;
 
-std::vector<BCPTargetCol> ParseBCPFmtFile(const std::string &fmt_path) {
-	std::vector<BCPTargetCol> cols;
+std::vector<BCPCol> ParseBCPFmtFile(const std::string &fmt_path) {
+	std::vector<BCPCol> cols;
 	std::ifstream f(fmt_path);
 	if (!f.is_open())
 		return cols;
@@ -17,17 +17,19 @@ std::vector<BCPTargetCol> ParseBCPFmtFile(const std::string &fmt_path) {
 	while (std::getline(f, line)) {
 		std::istringstream iss(line);
 		int colid, prefixlen, fieldlen, colnum, nullable = 1;
-		std::string type, term, colname;
-		if (!(iss >> colid >> type >> prefixlen >> fieldlen >> term >> colnum >> colname))
+		std::string type, term, colname, collation;
+		if (!(iss >> colid >> type >> prefixlen >> fieldlen >> term >> colnum >> colname >> collation))
 			continue;
 		// Try to read nullable (optional, SQL 2012+)
 		if (!(iss >> nullable))
 			nullable = 1;
-		BCPTargetCol col;
+		BCPCol col;
 		col.name = colname;
 		col.sql_type = type;
+		col.prefix = prefixlen;
 		col.length = fieldlen;
 		col.nullable = (nullable != 0);
+		col.collation = collation;
 		cols.push_back(col);
 	}
 	return cols;

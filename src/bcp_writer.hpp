@@ -4,21 +4,17 @@
 #include <memory>
 #include <fstream>
 
-struct BCPTargetCol {
-	std::string name;
-	std::string sql_type;
-	int length = 0;
-	bool nullable;
-};
-struct BCPWriter {
-	BCPWriter(const std::string &data_path, const std::vector<BCPTargetCol> &cols, bool unicode_native);
+#include "bcp_format_utils.hpp"
 
-	void WriteChunk(duckdb::DataChunk &chunk, const std::vector<BCPTargetCol> &cols);
+struct BCPWriter {
+	BCPWriter(const std::string &data_path, const std::vector<BCPCol> &cols, bool unicode_native);
+
+	void WriteChunk(duckdb::DataChunk &chunk, const std::vector<BCPCol> &cols);
 	void Finish();
 
 private:
 	std::ofstream out_;
-	std::vector<BCPTargetCol> cols_;
+	std::vector<BCPCol> cols_;
 	bool unicode_native_;
 
 	// helpers
