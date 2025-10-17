@@ -125,7 +125,8 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 						actual_len = len;
 					}
 				} else if (col.prefix == 4) {
-					uint32_t len = (uint8_t)prefix_buf[0] | ((uint8_t)prefix_buf[1] << 8) | ((uint8_t)prefix_buf[2] << 16) | ((uint8_t)prefix_buf[3] << 24);
+					uint32_t len = (uint8_t)prefix_buf[0] | ((uint8_t)prefix_buf[1] << 8) |
+					               ((uint8_t)prefix_buf[2] << 16) | ((uint8_t)prefix_buf[3] << 24);
 					if (len == 0xFFFFFFFF) {
 						is_null = true;
 					} else {
@@ -144,7 +145,7 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 			}
 			duckdb::Value v;
 			const char *value_data = value_buf.data();
-			if (is_null && col.nullable) {
+			if (is_null) {
 				v = duckdb::Value();
 			} else if (col.sql_type == "SQLBIT") {
 				v = duckdb::Value::BOOLEAN(value_data[0] != 0);
@@ -154,11 +155,13 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 				int16_t val = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8);
 				v = duckdb::Value::SMALLINT(val);
 			} else if (col.sql_type == "SQLINT") {
-				int32_t val = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8) | ((uint8_t)value_data[2] << 16) | ((uint8_t)value_data[3] << 24);
+				int32_t val = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8) | ((uint8_t)value_data[2] << 16) |
+				              ((uint8_t)value_data[3] << 24);
 				v = duckdb::Value::INTEGER(val);
 			} else if (col.sql_type == "SQLBIGINT") {
 				int64_t val = 0;
-				for (int i = 0; i < 8; i++) val |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
+				for (int i = 0; i < 8; i++)
+					val |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
 				v = duckdb::Value::BIGINT(val);
 			} else if (col.sql_type == "SQLFLT4") {
 				float f;
@@ -176,7 +179,8 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 				std::string s;
 				for (int i = 0; i + 1 < actual_len; i += 2) {
 					uint16_t code_unit = ((uint8_t)value_data[i]) | ((uint8_t)value_data[i + 1] << 8);
-					if (code_unit == 0) break;
+					if (code_unit == 0)
+						break;
 					if (code_unit < 0x80) {
 						s.push_back((char)code_unit);
 					} else if (code_unit < 0x800) {
@@ -198,12 +202,14 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 				v = duckdb::Value::DATE(duckdb::date_t(days));
 			} else if (col.sql_type == "SQLTIME") {
 				int64_t ticks = 0;
-				for (int i = 0; i < 5; i++) ticks |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
+				for (int i = 0; i < 5; i++)
+					ticks |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
 				int64_t micros = ticks / 10;
 				v = duckdb::Value::TIME(duckdb::dtime_t(micros));
 			} else if (col.sql_type == "SQLDATETIME2") {
 				int64_t ticks = 0;
-				for (int i = 0; i < 5; i++) ticks |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
+				for (int i = 0; i < 5; i++)
+					ticks |= ((int64_t)(uint8_t)value_data[i]) << (8 * i);
 				int32_t days = (uint8_t)value_data[5] | ((uint8_t)value_data[6] << 8) | ((uint8_t)value_data[7] << 16);
 				int64_t micros = ticks / 10;
 				days -= 719162;
@@ -211,23 +217,30 @@ void BCPTableRead(ClientContext &context, TableFunctionInput &input, DataChunk &
 				duckdb::dtime_t t(micros);
 				v = duckdb::Value::TIMESTAMP(duckdb::Timestamp::FromDatetime(d, t));
 			} else if (col.sql_type == "SQLDATETIME") {
-				int32_t days = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8) | ((uint8_t)value_data[2] << 16) | ((uint8_t)value_data[3] << 24);
-				int32_t ticks = (uint8_t)value_data[4] | ((uint8_t)value_data[5] << 8) | ((uint8_t)value_data[6] << 16) | ((uint8_t)value_data[7] << 24);
+				int32_t days = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8) | ((uint8_t)value_data[2] << 16) |
+				               ((uint8_t)value_data[3] << 24);
+				int32_t ticks = (uint8_t)value_data[4] | ((uint8_t)value_data[5] << 8) |
+				                ((uint8_t)value_data[6] << 16) | ((uint8_t)value_data[7] << 24);
 				int32_t days1970 = days - (719162 - 693596);
 				double micros = ticks * (1000000.0 / 300.0);
-				v = duckdb::Value::TIMESTAMP(duckdb::Timestamp::FromDatetime(duckdb::date_t(days1970), duckdb::dtime_t((int64_t)micros)));
+				v = duckdb::Value::TIMESTAMP(
+				    duckdb::Timestamp::FromDatetime(duckdb::date_t(days1970), duckdb::dtime_t((int64_t)micros)));
 			} else if (col.sql_type == "SQLDATETIM4") {
 				int32_t days = (uint8_t)value_data[0] | ((uint8_t)value_data[1] << 8);
 				int32_t minutes = (uint8_t)value_data[2] | ((uint8_t)value_data[3] << 8);
 				int32_t days1970 = days - (719162 - 693596);
 				int64_t micros = minutes * 60 * 1000000LL;
-				v = duckdb::Value::TIMESTAMP(duckdb::Timestamp::FromDatetime(duckdb::date_t(days1970), duckdb::dtime_t(micros)));
+				v = duckdb::Value::TIMESTAMP(
+				    duckdb::Timestamp::FromDatetime(duckdb::date_t(days1970), duckdb::dtime_t(micros)));
 			} else if (col.sql_type == "SQLUNIQUEID") {
 				if (actual_len == 16) {
 					duckdb::hugeint_t uuid;
-					uuid.lower = 0; uuid.upper = 0;
-					for (int i = 0; i < 8; i++) uuid.lower |= ((uint64_t)(uint8_t)value_data[i]) << (8 * i);
-					for (int i = 0; i < 8; i++) uuid.upper |= ((uint64_t)(uint8_t)value_data[8 + i]) << (8 * i);
+					uuid.lower = 0;
+					uuid.upper = 0;
+					for (int i = 0; i < 8; i++)
+						uuid.lower |= ((uint64_t)(uint8_t)value_data[i]) << (8 * i);
+					for (int i = 0; i < 8; i++)
+						uuid.upper |= ((uint64_t)(uint8_t)value_data[8 + i]) << (8 * i);
 					v = duckdb::Value::UUID(uuid);
 				} else {
 					v = duckdb::Value();

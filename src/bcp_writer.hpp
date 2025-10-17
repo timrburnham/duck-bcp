@@ -26,6 +26,8 @@ private:
 	void WriteDecimal(const duckdb::Value &v, int precision, int scale);
 	void WriteVarcharBytes(const duckdb::string_t &s, int maxlen);  // varchar with 2-byte prefix
 	void WriteNVarcharUTF16(const duckdb::string_t &s, int maxlen); // nvarchar with 2-byte prefix (UTF-16LE)
+	void WriteCharBytes(const duckdb::string_t &s, int maxlen);     // varchar with 2-byte prefix
+	void WriteNCharUTF16(const duckdb::string_t &s, int maxlen);    // nvarchar with 2-byte prefix (UTF-16LE)
 	void WriteVarbinary(const duckdb::string_t &s);                 // 1-byte or 4-byte prefix (<=255 -> 1 byte)
 	void WriteDate(const duckdb::date_t &d);                        // 3 bytes
 	void WriteTime(const duckdb::dtime_t &t, int precision);        // 3..5 bytes

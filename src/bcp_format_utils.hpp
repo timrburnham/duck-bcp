@@ -6,10 +6,9 @@
 struct BCPCol {
 	std::string name;
 	std::string sql_type;
-    std::string collation;
-    int prefix = 0;
+	std::string collation;
+	int prefix = 0;
 	int length = 0;
-	bool nullable;
 };
 
 // Parse a non-XML BCP .fmt file (version 8.0+)
@@ -21,3 +20,6 @@ duckdb::LogicalType MapBCPTypeToDuckDBType(const std::string &bcp_type, int leng
 
 // Map DuckDB LogicalType to BCP file format type string
 std::string MapDuckDBTypeToBCPType(const duckdb::LogicalType &type);
+
+// Map BCP file format type to number of prefix bytes, assuming nullability
+int MapBCPTypeToPrefixBytes(const std::string &bcp_type);

@@ -30,9 +30,9 @@ static unique_ptr<LocalFunctionData> BCPWriteLocalSink(ExecutionContext &, Funct
 
 // ---------- FunctionData for binding ----------
 struct BCPBindData : public FunctionData {
-	std::string path;               // output .bcp file path
-	std::vector<BCPCol> cols; // must match BCPWriter::WriteChunk signature
-	bool unicode_native = false;    // write NVARCHAR (for bcp -N) for char types
+	std::string path;            // output .bcp file path
+	std::vector<BCPCol> cols;    // must match BCPWriter::WriteChunk signature
+	bool unicode_native = false; // write NVARCHAR (for bcp -N) for char types
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto res = make_uniq<BCPBindData>();
@@ -62,9 +62,6 @@ static std::string GetOption(const options_map_t &opts, const std::string &k, co
 	return s.empty() ? def : s;
 }
 
-// ...existing code...
-
-// Restore GetBoolOption helper
 static bool GetBoolOption(const options_map_t &opts, const std::string &k, bool def = false) {
 	auto v = FindLastOption(opts, k);
 	if (!v)
@@ -94,21 +91,14 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 
 	if (!fmt_cols.empty() && fmt_cols.size() == names.size()) {
 		// Use .fmt file metadata (already BCP types)
-		for (idx_t i = 0; i < names.size(); i++) {
-			BCPCol col;
-			col.name = names[i];
-			col.sql_type = fmt_cols[i].sql_type;
-			col.length = fmt_cols[i].length;
-			col.nullable = fmt_cols[i].nullable;
-			bind->cols.push_back(std::move(col));
-		}
+		bind->cols = std::move(fmt_cols);
 	} else {
 		// Fallback: map from DuckDB types to BCP types
 		for (idx_t i = 0; i < names.size(); i++) {
 			BCPCol col;
 			col.name = names[i];
 			col.sql_type = MapDuckDBTypeToBCPType(sql_types[i]);
-			col.nullable = true; // Could inspect nullability from DuckDB if needed
+			col.prefix = MapBCPTypeToPrefixBytes(col.sql_type); // assume nullable
 			bind->cols.push_back(std::move(col));
 		}
 	}
@@ -120,7 +110,7 @@ static unique_ptr<FunctionData> BCPWriteBind(ClientContext & /*context*/, CopyFu
 // ---------- Global writer state ----------
 struct BCPGlobalState : public GlobalFunctionData {
 	unique_ptr<BCPWriter> writer;
-	std::vector<BCPCol> cols; // std::vector to match BCPWriter::WriteChunk
+	std::vector<BCPCol> cols;
 	bool initialized = false;
 };
 

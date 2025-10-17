@@ -87,6 +87,37 @@ void BCPWriter::WriteVarcharBytes(const string_t &s, int maxlen) {
 	out_.write(s.GetData(), len);
 }
 
+void BCPWriter::WriteCharBytes(const string_t &s, int maxlen) {
+	// Write fixed-length CHAR, no prefix, pad with spaces to maxlen
+	auto len = s.GetSize();
+	if (maxlen > 0 && len > (size_t)maxlen)
+		len = maxlen;
+	out_.write(s.GetData(), len);
+	for (int i = len; i < maxlen; i++)
+		out_.put(' ');
+}
+
+void BCPWriter::WriteNCharUTF16(const string_t &s, int maxlen) {
+	// Write fixed-length NCHAR, no prefix, pad with UTF-16 spaces to maxlen
+	std::u16string u16;
+	{
+		auto u8 = std::string(s.GetData(), s.GetSize());
+		Utf8Proc::IsValid(u8.c_str(), u8.size());
+		std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> cvt;
+		u16 = cvt.from_bytes(u8);
+	}
+	if (maxlen > 0 && (int)u16.size() > maxlen)
+		u16.resize(maxlen);
+	// Write actual chars
+	out_.write((const char *)u16.data(), u16.size() * 2);
+	// Pad with UTF-16 spaces
+	for (int i = u16.size(); i < maxlen; i++) {
+		char16_t space = u' ';
+		out_.put((char)(space & 0xFF));
+		out_.put((char)((space >> 8) & 0xFF));
+	}
+}
+
 void BCPWriter::WriteNVarcharUTF16(const string_t &s, int maxlen) {
 	// UTF-16LE, prefix is number of BYTES (SQL Server expects pairs)
 	std::u16string u16;
@@ -186,10 +217,6 @@ void BCPWriter::WriteSmallDateTime(const timestamp_t &ts) {
 	WriteIntLE64(minutes & 0xFFFF, 2);
 }
 
-static inline bool IsNullable(const BCPCol &c) {
-	return c.nullable;
-}
-
 // dispatch per SQL Server type string
 void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPCol> &cols) {
 	chunk.Flatten();
@@ -198,15 +225,13 @@ void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPCol> &cols) {
 		for (idx_t c = 0; c < std::min(chunk.ColumnCount(), cols.size()); c++) {
 			auto &vc = chunk.data[c];
 			auto &tc = cols[c];
+			auto bcp_type = tc.sql_type;
 
 			if (vc.GetType().id() == LogicalTypeId::SQLNULL || FlatVector::IsNull(vc, r)) {
 				// NULL handling by BCP type
-				auto bcp_type = tc.sql_type;
 				if (bcp_type == "SQLCHAR" || bcp_type == "SQLNCHAR" || bcp_type == "SQLVARCHAR" ||
 				    bcp_type == "SQLNVARCHAR") {
 					WriteNullFixedPrefix(2);
-				} else if (bcp_type == "SQLVARBINARY" || bcp_type == "SQLBINARY" || bcp_type == "SQLIMAGE") {
-					WriteNullFixedPrefix(1);
 				} else {
 					WriteNullFixedPrefix(1);
 				}
@@ -214,43 +239,42 @@ void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPCol> &cols) {
 			}
 
 			// Non-null: encode based on BCP type
-			auto bcp_type = tc.sql_type;
 			if (bcp_type == "SQLBIT") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)1);
 				out_.put((char)(BooleanValue::Get(vc.GetValue(r)) ? 1 : 0));
 			} else if (bcp_type == "SQLTINYINT") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)1);
 				auto v = (uint8_t)IntegerValue::Get(vc.GetValue(r));
 				out_.put((char)v);
 			} else if (bcp_type == "SQLSMALLINT") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)2);
 				WriteIntLE64((int16_t)IntegerValue::Get(vc.GetValue(r)), 2);
 			} else if (bcp_type == "SQLINT") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)4);
 				WriteIntLE64((int32_t)IntegerValue::Get(vc.GetValue(r)), 4);
 			} else if (bcp_type == "SQLBIGINT") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)8);
 				WriteIntLE64((int64_t)IntegerValue::Get(vc.GetValue(r)), 8);
 			} else if (bcp_type == "SQLDECIMAL" || bcp_type == "SQLNUMERIC") {
 				// TODO: parse precision/scale if needed
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)1);
 				WriteDecimal(vc.GetValue(r), 18, 0); // default p,s
 			} else if (bcp_type == "SQLFLT4") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)4);
 				WriteFloatLE((float)FloatValue::Get(vc.GetValue(r)));
 			} else if (bcp_type == "SQLFLT8") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)8);
 				WriteDoubleLE((double)DoubleValue::Get(vc.GetValue(r)));
 			} else if (bcp_type == "SQLUNIQUEID") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)16);
 				// value in DuckDB UUID is stored as VARCHAR; adapt if you keep UUID logical type
 				auto s = StringValue::Get(vc.GetValue(r));
@@ -262,31 +286,39 @@ void BCPWriter::WriteChunk(DataChunk &chunk, const std::vector<BCPCol> &cols) {
 			} else if (bcp_type == "SQLNCHAR" || bcp_type == "SQLNVARCHAR") {
 				auto s = StringValue::Get(vc.GetValue(r));
 				string_t st(s);
-				WriteNVarcharUTF16(st, tc.length);
+				if (tc.prefix == 0) {
+					WriteNCharUTF16(st, tc.length);
+				} else {
+					WriteNVarcharUTF16(st, tc.length);
+				}
 			} else if (bcp_type == "SQLCHAR" || bcp_type == "SQLVARCHAR") {
 				auto s = StringValue::Get(vc.GetValue(r));
 				string_t st(s);
-				WriteVarcharBytes(st, tc.length);
+				if (tc.prefix == 0) {
+					WriteCharBytes(st, tc.length);
+				} else {
+					WriteVarcharBytes(st, tc.length);
+				}
 			} else if (bcp_type == "SQLDATE") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)3);
 				WriteDate(DateValue::Get(vc.GetValue(r)));
 			} else if (bcp_type == "SQLTIME") {
 				int p = 7; // default precision
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)5);
 				WriteTime(TimeValue::Get(vc.GetValue(r)), p);
 			} else if (bcp_type == "SQLDATETIME2") {
 				int p = 6; // default precision
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)8);
 				WriteDateTime2(TimestampValue::Get(vc.GetValue(r)), p);
 			} else if (bcp_type == "SQLDATETIME") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)8);
 				WriteDateTimeLegacy(TimestampValue::Get(vc.GetValue(r)));
 			} else if (bcp_type == "SQLDATETIM4") {
-				if (IsNullable(tc))
+				if (tc.prefix > 0)
 					out_.put((char)4);
 				WriteSmallDateTime(TimestampValue::Get(vc.GetValue(r)));
 			} else {
